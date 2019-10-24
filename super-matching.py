@@ -1,9 +1,12 @@
 
+import sys
 import time
 import math
+import argparse
+import logging
 import numpy as np
 import scipy as sp
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, MiniBatchKMeans
 from sklearn.linear_model import LinearRegression
 from scipy.stats import pearsonr
 import networkx as nx
@@ -11,130 +14,57 @@ import time
 from collections import Counter
 import WBbM as WBbM
 
-#data1 = np.loadtxt("ImmVar.csv")
-#data2 = np.loadtxt("CLUES.csv")
+def parse_args():
+    main_p = argparse.ArgumentParser()
+    main_p.add_argument('-data', dest='datasets', required=True, help='comma separated list of paths to the datasets to be integrated')
+    main_p.add_argument('-output', dest='outputdata', required=True, help='path for the output file')
+    main_p.add_argument('-anchors', dest='ancnum', default=200, required=False, help='number of anchor points to consider in each dataset')
+    main_p.add_argument('-filter-cor', dest='filter_cor', default=0.7, required=False, help='filtering threshold on Pearson correlation between the anchors across the datasets')
+    main_p.add_argument('-greedy', dest='greedy', required=False, action='store_true', help='use greedy heuristic for the minimum weight matching (recommended for extra large datasets)')
+    return vars(main_p.parse_args()) 
 
-data1 = np.loadtxt("smartseq2.csv")
-data2 = np.loadtxt("celseq2.csv")
+
+args = parse_args()
+
+filter_cor = float(args["filter_cor"])
+ancnum = int(args["ancnum"])
+greedy = args["greedy"]
+outputdata = args["outputdata"]
+datasets = args["datasets"]
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler(sys.stdout)
+formatter = logging.Formatter('%(asctime)s: %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+
+datasets = datasets.split(",")
+logger.info("loading the datasets into the memory")
+data1 = np.loadtxt(datasets[0])
+data2 = np.loadtxt(datasets[1])
 
 
 data1 = data1.T
 data2 = data2.T
 
-print data1.shape
-print data2.shape
-
-km1 = KMeans(n_clusters=200, random_state=0).fit(data1)
+logger.info("Finding the anchors points in dataset 1")
+km1 = MiniBatchKMeans(n_clusters=ancnum, random_state=0).fit(data1)
 data11 = km1.cluster_centers_
 
-km2 = KMeans(n_clusters=200, random_state=0).fit(data2)
+logger.info("Finding the anchors points in dataset 2")
+km2 = MiniBatchKMeans(n_clusters=ancnum, random_state=0).fit(data2)
 data22 = km2.cluster_centers_
 
 
-
-aa = sorted(Counter(km1.labels_).values(), reverse=True)
-bb = sorted(Counter(km2.labels_).values(), reverse=True)
-
-aa2 = [x * 1.0 / sum(aa) for x in aa]
-bb2 = [x * 1.0 / sum(bb) for x in bb]
-
-
-aa3 = []
-cum = 0
-for x, y in enumerate(aa2):
-    if cum < 0.98:
-        aa3.append(aa[x])
-        cum += y
-    else:
-        break
-th1 = aa3[-1]
-
-bb3 = []
-cum = 0
-for x, y in enumerate(bb2):
-    if cum < 0.98:
-        bb3.append(bb[x])
-        cum += y
-    else:
-        break
-th2 = bb3[-1]
-
-"""
-good_labels1 = []
-for x, y in Counter(km1.labels_).items():
-    if y > th1:
-        good_labels1.append(x)
-
-good_labels2 = []
-for x, y in Counter(km2.labels_).items():
-    if y > th2:
-        good_labels2.append(x)
-
-
-print good_labels1
-print good_labels2
-
-total1 = 0
-for x in good_labels1:
-    total1 += Counter(km1.labels_)[x]
-
-total2 = 0
-for x in good_labels2:
-    total2 += Counter(km2.labels_)[x]
-
-print total1, total2, "kjslkfjs"
-
-
-anchors_num1 = {}
-for x in good_labels1:
-    anchors_num1[x] = int(math.ceil(Counter(km1.labels_)[x] * 100.0 / total1))
-    if anchors_num1[x] == 0:
-        anchors_num1[x] = 1
-
-anchors_num2 = {}
-for x in good_labels2:
-    anchors_num2[x] = int(math.ceil(Counter(km2.labels_)[x] * 100.0 / total2))
-    if anchors_num2[x] == 0:
-        anchors_num2[x] = 1
-
-
-print anchors_num1
-print anchors_num2
-
-
-
-anchors1 = []
-anchors2 = []
-
-for x, y in anchors_num1.items():
-    sample = np.random.choice(np.array(range(len(km1.labels_)))[km1.labels_ == x], size = y, replace = False)
-    anchors1.extend(sample)
-
-for x, y in anchors_num2.items():
-    sample = np.random.choice(np.array(range(len(km2.labels_)))[km2.labels_ == x], size = y, replace = False)
-    anchors2.extend(sample)
-
-
-print anchors1
-print anchors2
-
-
-data11 = data1[anchors1, :]
-data22 = data2[anchors2, :]
-"""
-
-
-# LLJLKJLKJLKJ
 data11 = km1.cluster_centers_
 data22 = km2.cluster_centers_
-
-
-
 
 
 la = len(data11)
 lb = len(data22)
 
+
+logger.info("building the anchor graph")
 graph = nx.Graph()
 nodes1 = list(range(la))
 nodes2 = np.array(range(la, la + lb))
@@ -150,45 +80,48 @@ for i in range(len(nodes1)):
         xx.append((j, cor))
     xx = sorted(xx, key = lambda x: x[1], reverse = True)
     top10percent = int(len(xx) / 5)
-    for j, _ in [(u, v) for u, v in xx[:top10percent] if v > 0.7]:
+    for j, _ in [(u, v) for u, v in xx[:top10percent] if v > filter_cor]:
         graph.add_edge(nodes1[i], nodes2[j], weight=-distances[i][j])
+
 
 isola = list(nx.isolates(graph))[:]
 for iso in isola:
     graph.remove_node(iso)
 
 
-print len(graph.nodes())
-print len(graph.edges())
+logger.info("matching anchors via minimum weight matching")
+if greedy:
+    def greedy_matching(graph, nr_edges=0):
+        from queue import PriorityQueue
+        pq = PriorityQueue()
+        for x, y in graph.edges():
+            pq.put((-graph[x][y]["weight"], (x, y)))
+        matchings = {}
+        while not pq.empty() or len(matchings) < nr_edges:
+            el = pq.get()
+            w, el = el
+            if not matchings.get(el[0]) and not matchings.get(el[1]):
+                matchings[el[0]] = el[1]
+                matchings[el[1]] = el[0]
+        matchings = set(map(lambda x: tuple(sorted(x)), matchings.items()))
+        return matchings
+    mat = greedy_matching(graph)
+else:
+    mat = nx.max_weight_matching(graph, maxcardinality=True)
 
-
-
-
-time1 = time.time()
-mat = nx.max_weight_matching(graph, maxcardinality=True)
-print time.time() - time1
 matching = []
 for x, y in mat:
-    print x, y
     if x >= la:
         x, y = y, x
     matching.append((x, y - la))
 matching = sorted(matching, key = lambda x: x[0])
 
-
-total_distance = 0
-for x, y in matching:
-    print (x, y)
-    total_distance += distances[x][y]
-print total_distance
-
-
+logger.info("computing integration vectors")
 integration_vectors = {}
 for x, y in matching:
-    print pearsonr(data22[y, :], data11[x, :]), "PERASON"
     integration_vectors[x] = data22[y, :] - data11[x, :]
 
-
+logger.info("integration of dataset 1 into 2")
 for i in range(data1.shape[0]):
     yy = []
     for x in integration_vectors.keys():
@@ -200,10 +133,8 @@ for i in range(data1.shape[0]):
     portion2 = math.exp(-dist2) / (math.exp(-dist1) + math.exp(-dist2))
     data1[i, :] += (portion1 * integration_vectors[closest1] + portion2 * integration_vectors[closest2])
 
-#np.savetxt("CLUES-corrected.csv", data1, fmt = "%.2f")
-#np.savetxt("ImmVar-corrected.csv", data2, fmt = "%.2f")
+logger.info("saving the results")
+np.savetxt(outputdata, np.vstack([data1, data2]), fmt = "%.2f")
 
-np.savetxt("smartseq2-corrected.csv", data1, fmt = "%.2f")
-np.savetxt("celseq2-corrected.csv", data2, fmt = "%.2f")
 
-print "DONE"
+logger.info("thank you!")
