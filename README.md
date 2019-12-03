@@ -36,7 +36,10 @@ The main idea of BATMAN is based on finding a parsimonious matching between two 
 1. Identifying the set of anchors in each of the datasets (their number is specified with parameter -anchors)
 2. Building a weighted bipartite graph where each partition corresponds to each of the datasets and the edges are weighted by the Euclidean distance between the points (cells in N-dimensional space) corresponding to their endpoints
 3. Finding minimum weight matching in this graph
-4. Determining local shifting vectors and batch correction
+    * a. Exact (blossom-based) algorithm
+    * b. Greedy approximation (approximation ratio 2)
+4. Determining local shifting vectors
+5. Batch correction
 
 
 BATMAN was developed by Igor Mandric at UCLA. If you have any questions or suggestions, feel free to contact the author at [imandric@ucla.edu](mailto:imandric@ucla.edu).
