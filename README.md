@@ -2,4 +2,6 @@
 Batman: Batch effect correction via minimum weight MAtchiNg
 
 
-![](http://alan.cs.gsu.edu/batman.png)
+<img align="center" src="http://alan.cs.gsu.edu/batman.png" width="40%">
+
+
