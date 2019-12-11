@@ -1,3 +1,4 @@
+
 import sys
 import time
 import math
@@ -96,6 +97,21 @@ for x in del1:
     del cluster_freq1[x]
 for x in del2:
     del cluster_freq2[x]
+
+if len(cluster_freq1) > len(cluster_freq2):
+    # remove some of the centers
+    items = sorted(cluster_freq1.items(), key = lambda x: x[1], reverse = True)[:len(cluster_freq2)]
+    cluster_freq1 = {}
+    for x, y in items:
+        cluster_freq1[x] = y
+elif len(cluster_freq2) > len(cluster_freq1):
+    # remove some of the centers
+    items = sorted(cluster_freq2.items(), key = lambda x: x[1], reverse = True)[:len(cluster_freq1)]
+    cluster_freq2 = {}
+    for x, y in items:
+        cluster_freq2[x] = y
+
+print len(cluster_freq1), len(cluster_freq2), "FJLKSDJFKLSDJFKLSDJFLKSDJFKLSJFKLSDJFKLSDJFKLSDJLKFJ"
 
 graph = nx.Graph()
 nodes1 = []
