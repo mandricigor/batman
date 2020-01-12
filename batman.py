@@ -1,4 +1,3 @@
-
 import sys
 import time
 import math
@@ -7,19 +6,25 @@ import logging
 import numpy as np
 import scipy as sp
 from sklearn.cluster import MiniBatchKMeans
+from sklearn.decomposition import PCA
 from scipy.stats import pearsonr
 import networkx as nx
 import time
 from collections import Counter
+from networkx.algorithms import bipartite
 
 
 def parse_args():
     main_p = argparse.ArgumentParser()
     main_p.add_argument('-data', dest='datasets', required=True, help='comma separated list of paths to the datasets to be integrated')
     main_p.add_argument('-output', dest='outputdata', required=True, help='path for the output file')
-    main_p.add_argument('-anchors', dest='ancnum', default=200, required=False, help='number of anchor points to consider in each dataset')
+    main_p.add_argument('-anchors', dest='ancnum', default=30, required=False, help='number of anchor points to consider in each dataset')
+    main_p.add_argument('-clusters', dest='clusters', default=30, required=False, help='number of anchor points to consider in each dataset')
+    main_p.add_argument('-neighbors', dest='neighbors', default=3, required=False, help='number of nearest anchors to consider')
+    main_p.add_argument('-smoothing', dest='smoothing', default=0.5, required=False, help='smoothing coefficient')
     main_p.add_argument('-filter-cor', dest='filter_cor', default=0.7, required=False, help='filtering threshold on Pearson correlation between the anchors across the datasets')
     main_p.add_argument('-greedy', dest='greedy', required=False, action='store_true', help='use greedy heuristic for the minimum weight matching (recommended for extra large datasets)')
+    main_p.add_argument('-rowgenes', dest='rowgenes', required=False, action='store_true', help='rows of the data matrix are genes')
     return vars(main_p.parse_args()) 
 
 
@@ -27,9 +32,13 @@ args = parse_args()
 
 filter_cor = float(args["filter_cor"])
 ancnum = int(args["ancnum"])
+neighbors = int(args["neighbors"])
+smoothing = float(args["smoothing"])
 greedy = args["greedy"]
+rowgenes = args["rowgenes"]
 outputdata = args["outputdata"]
 datasets = args["datasets"]
+clusters = int(args["clusters"])
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 handler = logging.StreamHandler(sys.stdout)
@@ -42,51 +51,119 @@ logger.info("loading the datasets into the memory")
 data1 = np.loadtxt(datasets[0])
 data2 = np.loadtxt(datasets[1])
 
+if rowgenes:
+    data1 = data1.T
+    data2 = data2.T
 
-data1 = data1.T
-data2 = data2.T
+if data1.shape[1] > 10:
+    pca1 = PCA(n_components=10)
+    data1_pca = pca1.fit_transform(data1)
 
-logger.info("Finding the anchors points in dataset 1")
-km1 = MiniBatchKMeans(n_clusters=ancnum, random_state=0).fit(data1)
-data11 = km1.cluster_centers_
-
-logger.info("Finding the anchors points in dataset 2")
-km2 = MiniBatchKMeans(n_clusters=ancnum, random_state=0).fit(data2)
-data22 = km2.cluster_centers_
-
-
-data11 = km1.cluster_centers_
-data22 = km2.cluster_centers_
+    pca2 = PCA(n_components=10)
+    data2_pca = pca2.fit_transform(data2)
+else:
+    data1_pca = data1
+    data2_pca = data2
 
 
-la = len(data11)
-lb = len(data22)
+logger.info("Running KMeans on dataset 1")
+km1 = MiniBatchKMeans(n_clusters=clusters, random_state=0).fit(data1_pca)
+km1_labels_ = km1.labels_
+km1_cluster_centers_ = []
+for i in range(clusters):
+    km1_cluster_centers_.append(np.mean(data1[km1.labels_ == i, :], axis = 0))
+km1_cluster_centers_ = np.array(km1_cluster_centers_)
+
+logger.info("Running KMeans on dataset 2")
+km2 = MiniBatchKMeans(n_clusters=clusters, random_state=0).fit(data2_pca)
+km2_labels_ = km2.labels_
+km2_cluster_centers_ = []
+for i in range(clusters):
+    km2_cluster_centers_.append(np.mean(data2[km2.labels_ == i, :], axis = 0))
+km2_cluster_centers_ = np.array(km2_cluster_centers_)
 
 
-logger.info("building the anchor graph")
+cluster_freq1 = Counter(km1.labels_)
+cluster_freq2 = Counter(km2.labels_)
+
+A_labels = {}
+B_labels = {}
+
+for x, y in enumerate(km1.labels_):
+    if y not in A_labels:
+        A_labels[y] = []
+    A_labels[y].append(x)
+
+for x, y in enumerate(km2.labels_):
+    if y not in B_labels:
+        B_labels[y] = []
+    B_labels[y].append(x)
+
+cluster_threshold = 0
+cluster_bad1 = []
+for x, y in cluster_freq1.items():
+    if y < cluster_threshold:
+        cluster_bad1.append(x)
+
+cluster_bad2 = []
+for x, y in cluster_freq2.items():
+    if y < cluster_threshold:
+        cluster_bad2.append(x)
+
+for x in cluster_bad1:
+    del cluster_freq1[x]
+for x in cluster_bad2:
+    del cluster_freq2[x]
+    
+s1 = sum(cluster_freq1.values())
+s2 = sum(cluster_freq2.values())
+
+cluster_share1 = {}
+for x, y in cluster_freq1.items():
+    cluster_share1[x] = int(round(1.0 * ancnum * y / s1))
+
+cluster_share2 = {}
+for x, y in cluster_freq2.items():
+    cluster_share2[x] = int(round(1.0 * ancnum * y / s2))
+
+print cluster_share1
+print cluster_freq1
+
+
 graph = nx.Graph()
-nodes1 = list(range(la))
-nodes2 = np.array(range(la, la + lb))
+nodes1 = []
+for x in cluster_share1.keys():
+    for i in range(cluster_share1[x]):
+        nodes1.append("%s_A_%s" % (x, i))
+
+nodes2 = []
+for x in cluster_share2.keys():
+    for i in range(cluster_share2[x]):
+        nodes2.append("%s_B_%s" % (x, i))
+
+
+graph = nx.Graph()
 graph.add_nodes_from(nodes1, bipartite=0)
 graph.add_nodes_from(nodes2, bipartite=1)
-distances = sp.spatial.distance.cdist(data11, data22, 'euclidean')
 
+print len(nodes1), len(nodes2), "SUKA"
 
-for i in range(len(nodes1)):
-    xx = []
-    for j in range(len(nodes2)):
-        cor = pearsonr(data11[i, :], data22[j, :])[0]
-        xx.append((j, cor))
-    xx = sorted(xx, key = lambda x: x[1], reverse = True)
-    top10percent = int(len(xx) / 5)
-    for j, _ in [(u, v) for u, v in xx[:top10percent] if v > filter_cor]:
-        graph.add_edge(nodes1[i], nodes2[j], weight=-distances[i][j])
-
-
-isola = list(nx.isolates(graph))[:]
-for iso in isola:
-    graph.remove_node(iso)
-
+for x in nodes1:
+    cors = []
+    xx = km1_cluster_centers_[int(x.split("_")[0]), :]
+    for y in nodes2:
+        yy = km2_cluster_centers_[int(y.split("_")[0]), :]
+        cors.append((y, yy, pearsonr(xx, yy)[0]))
+        #if pearsonr(xx, yy)[0] > filter_cor:
+        #    xydist = sp.spatial.distance.euclidean(xx, yy)
+        #    graph.add_edge(x, y, weight=-xydist)
+    #print np.mean(cors), np.min(cors), np.max(cors), len([x for x in cors if x > 0.9]) * 1.0 / len(cors)
+    threshold = np.percentile([m[2] for m in cors], 90)
+    for y, yy, cor in cors:
+        if cor > threshold:
+            xydist = sp.spatial.distance.euclidean(xx, yy)
+            graph.add_edge(x, y, weight=-xydist)
+    
 
 logger.info("matching anchors via minimum weight matching")
 if greedy:
@@ -108,32 +185,185 @@ if greedy:
 else:
     mat = nx.max_weight_matching(graph, maxcardinality=True)
 
-matching = []
+print len(mat), "MAT"
+
+graph2 = nx.Graph()
+nodes11 = []
+nodes22 = []
+for x in cluster_share1.keys():
+    nodes11.append("%s_A" % x)
+for x in cluster_share2.keys():
+    nodes22.append("%s_B" % x)
+
+graph2.add_nodes_from(nodes11, bipartite=0)
+graph2.add_nodes_from(nodes22, bipartite=1)
+
 for x, y in mat:
-    if x >= la:
+    if "B" in x:
         x, y = y, x
-    matching.append((x, y - la))
-matching = sorted(matching, key = lambda x: x[0])
+    print x, y
+    x, y = "_".join(x.split("_")[:2]), "_".join(y.split("_")[:2])
+    if (x, y) not in graph2.edges():
+        graph2.add_edge(x, y)
 
-logger.info("computing integration vectors")
-integration_vectors = {}
-for x, y in matching:
-    integration_vectors[x] = data22[y, :] - data11[x, :]
 
-logger.info("integration of dataset 1 into 2")
+
+# filter the graph
+B_fromA = {}
+for node in nodes22:
+    orignode = int(node.split("_")[0])
+    for point in B_labels[orignode]:
+        center_dist = {}
+        for center in nx.neighbors(graph2, node):
+            orig_center = int(center.split("_")[0])
+            center_dist[center] = sp.spatial.distance.euclidean(data2[point, :], km1_cluster_centers_[orig_center, :])
+        if center_dist:
+            mindist_center = min(center_dist.items(), key = lambda x: x[1])
+            if node not in B_fromA:
+                B_fromA[node] = set()
+            B_fromA[node].add(mindist_center[0])
+
+A_fromB = {}
+for node in nodes11:
+    orignode = int(node.split("_")[0])
+    for point in A_labels[orignode]:
+        center_dist = {}
+        for center in nx.neighbors(graph2, node):
+            orig_center = int(center.split("_")[0])
+            center_dist[center] = sp.spatial.distance.euclidean(data1[point, :], km2_cluster_centers_[orig_center, :])
+        if center_dist:
+            mindist_center = min(center_dist.items(), key = lambda x: x[1])
+            if node not in A_fromB:
+                A_fromB[node] = set()
+            A_fromB[node].add(mindist_center[0])
+
+
+edges_to_keep = set()
+
+for x in A_fromB:
+    for y in A_fromB[x]:
+        if x in B_fromA[y]:
+            edges_to_keep.add((x, y))
+
+for x in B_fromA:
+    for y in B_fromA[x]:
+        if x in A_fromB[y]:
+            edges_to_keep.add((y, x))
+
+
+edges_to_delete = set()
+for x, y in graph2.edges():
+    if (x, y) in edges_to_keep or (y, x) in edges_to_keep:
+        pass
+    else:
+        edges_to_delete.add((x, y))
+
+#print len(edges_to_delete), "EDGES TO DELETE"
+
+for x, y in edges_to_delete:
+    graph2.remove_edge(x, y)
+
+
+anchors = []
+emgraphs = []
+conncomp = nx.connected_components(graph2)
+for cc in list(conncomp):
+    if len(cc) == 1:
+        pass
+    elif len(cc) == 2:
+        # we have an anchor pair!
+        x, y = cc
+        if "B" in x:
+            x, y = y, x
+        x = int(x.split("_")[0])
+        y = int(y.split("_")[0])
+        anchors.append((km1_cluster_centers_[x, :], km2_cluster_centers_[y, :]))
+    else:
+        emgraphs.append(nx.subgraph(graph2, cc))
+
+for emg in emgraphs:
+    A_anch = {}
+    B_anch = {}
+    for node in emg.nodes():
+        if nx.degree(emg, node) > 1:
+            #this is an interesting node
+            orignode = int(node.split("_")[0])
+            points_of_centers = {}
+            if "A" in node:
+                for point in A_labels[orignode]:
+                    center_dist = {}
+                    for center in nx.neighbors(emg, node):
+                        orig_center = int(center.split("_")[0])
+                        center_dist[center] = sp.spatial.distance.euclidean(data1[point, :], km2_cluster_centers_[orig_center, :])
+                    mindist_center = min(center_dist.items(), key = lambda x: x[1])       
+                    if mindist_center[0] not in points_of_centers:
+                        points_of_centers[mindist_center[0]] = set()
+                    points_of_centers[mindist_center[0]].add(point)
+                if node not in A_anch:
+                    A_anch[node] = {}
+                for x, y in points_of_centers.items():
+                    A_anch[node][x] = np.mean(data1[list(y), :], axis = 0)
+            elif "B" in node:
+                for point in B_labels[orignode]:
+                    center_dist = {}
+                    for center in nx.neighbors(emg, node):
+                        orig_center = int(center.split("_")[0])
+                        center_dist[center] = sp.spatial.distance.euclidean(data2[point, :], km1_cluster_centers_[orig_center, :])
+                    mindist_center = min(center_dist.items(), key = lambda x: x[1]) 
+                    if mindist_center[0] not in points_of_centers:
+                        points_of_centers[mindist_center[0]] = set()
+                    points_of_centers[mindist_center[0]].add(point)
+                if node not in B_anch:
+                    B_anch[node] = {}
+                for x, y in points_of_centers.items():
+                    B_anch[node][x] = np.mean(data2[list(y), :], axis = 0)
+    for u, v in emg.edges():
+        if "B" in u: 
+            u, v = v, u
+        if u in A_anch and v in B_anch:
+            anchors.append((A_anch[u][v], B_anch[v][u]))
+        elif u in A_anch and v not in B_anch:
+            ornodeb = int(v.split("_")[0])
+            anchors.append((A_anch[u][v], km2_cluster_centers_[ornodeb, :]))
+        elif u not in A_anch and v in B_anch:
+            ornodea = int(u.split("_")[0])
+            print u, v
+            anchors.append((km1_cluster_centers_[ornodea, :], B_anch[v][u]))
+
+
+intvectors = []
+logger.info("integrating dataset 1 into 2")
 for i in range(data1.shape[0]):
     yy = []
-    for x in integration_vectors.keys():
-        yy.append((x, sp.spatial.distance.euclidean(data1[i, :], data11[x, :])))
+    for iii, xx in enumerate(anchors):
+        yy.append((iii, sp.spatial.distance.euclidean(data1[i, :], xx[0])))
     yy = sorted(yy, key = lambda z: z[1])
-    closest1, closest2 = yy[0][0], yy[1][0]
-    dist1, dist2 = yy[0][1], yy[1][0]
-    portion1 = math.exp(-dist1) / (math.exp(-dist1) + math.exp(-dist2))    
-    portion2 = math.exp(-dist2) / (math.exp(-dist1) + math.exp(-dist2))
-    data1[i, :] += (portion1 * integration_vectors[closest1] + portion2 * integration_vectors[closest2])
+    clnei = neighbors
+    closest = []
+    for ii in range(clnei):
+        closest.append(yy[ii][0])
+    dist = []
+    for ii in range(clnei):
+        dist.append(yy[ii][1])
+    u = smoothing
+    sumportions = 0
+    for d in dist:
+        sumportions += math.exp(-u * d)
+    portion = []
+    for d in dist:
+        portion.append(math.exp(-u * d) / sumportions)
+    intvect = np.zeros(len(anchors[0][0]))
+    for v, w in zip(portion, closest):
+        intvect += v * (anchors[w][1] - anchors[w][0])
+        #intvect += 0 * (anchors[w][1])
+    intvectors.append(intvect)
+
+for i in range(data1.shape[0]):
+    data1[i, :] += intvectors[i]
+
 
 logger.info("saving the results")
-np.savetxt(outputdata, np.vstack([data1, data2]), fmt = "%.2f")
+np.savetxt(outputdata, np.vstack([data1, data2]), fmt = "%.12f")
 
-
+logger.info("your datasets have been integrated!")
 logger.info("thank you!")
