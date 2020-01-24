@@ -2,8 +2,6 @@
 BATMAN: <ins>BAT</ins>ch effect correction via minimum weight <ins>MA</ins>tchi<ins>N</ins>g
 
 
-<img align="center" src="http://alan.cs.gsu.edu/batman.png" width="40%">
-
 
 BATMAN is a novel tool for batch effect correction (integration) of single-cell RNA-Seq datasets. Currently, it supports integration of two datasets. In order to get help on how to run BATMAN, please, type the following command in the terminal:
 
